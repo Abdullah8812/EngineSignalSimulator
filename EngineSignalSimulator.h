@@ -7,7 +7,8 @@
 #ifndef EngineSignalSimulator_H_
 #define EngineSignalSimulator_H_
 #include "Arduino.h"
-//add your includes for the project EngineSignalSimulator here
+#include <DueTimer.h>
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,6 +19,5 @@ void setup();
 } // extern "C"
 #endif
 
-//add your function definitions for the project EngineSignalSimulator here
 
 #endif /* EngineSignalSimulator_H_ */

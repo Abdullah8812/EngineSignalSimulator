@@ -1,4 +1,4 @@
-#include <DueTimer.h>
+#include "EngineSignalSimulator.h"
 
 /*
 Info from service manual:
@@ -34,92 +34,118 @@ Info from service manual:
  The camshaft position (CMP) sensor is positioned at the rear of the engine by the controllable camshaft (CVVT).
 
  The engine control module (ECM) can diagnose the camshaft position (CMP) sensor.
+
+ Detecting the position of the camshaft in relation to the position of the crankshaft
+Each camshaft flank aligns with pre-defined positions on the crankshaft when the camshaft is in its 0 position. These positions on the crankshaft are called reference positions for the flanks.
+The illustration shows how the signals relate to each other when the camshaft is in its 0 position (the camshaft is not deployed).
+A: Engine speed (RPM) sensor signal.
+B: Camshaft position (CMP) sensor signal. From high to low signal when the teeth on the camshaft pulley leave the camshaft position (CMP) sensor.
+C: Low engine speed (RPM) sensor signal because of the holes in the flywheel/carrier plate.
+D: Top dead center (TDC) cylinder 1, 0°CA (84°CA after hole "C" in the flywheel/carrier plate).
+1: Detection of flank 1, reference position 47°CA "D1".
+2: Detection of flank 2, reference position 227°CA "D2".
+3: Detection of flank 3, reference position 407°CA "D3".
+4: Detection of flank 4, reference position 587°CA "D4".
+If the flanks do not correspond to the reference positions on the crankshaft when the camshaft is in the 0 position (not deployed), the engine control module (ECM) will store the difference. There may be a difference from the camshaft 0 position if the timing belt is incorrectly seated or the camshaft are not correctly set for example. A mechanically damaged camshaft reset valve may prevent the camshaft moving to the 0 position when the engine control module (ECM) stores the adaptation value for the deviation of the camshaft. This may result in high deviation and a diagnostic trouble code (DTC) being stored.
+Deviations can be read out in the diagnostic tool.
  */
 
-const int mafPin = 8; // the pin where the mass airflow sensor is assigned (PWM)
-const int mapPin = 9; // the pin where the manifold air pressure sensor is assigned (PWM)
-const int crankShaftPin = 10; // the pin where the crank shaft position signal will be sent
-const int camShaftPin = 11; // the pin where the cam shaft position (CMP) signal will be sent
+#define CFG_SERIAL_SPEED 115200
 
+const int mafPin = 48; // the pin where the mass airflow sensor is assigned (PWM) - D2 on GEVCU2
+const int mapPin = 32; // the pin where the manifold air pressure sensor is assigned (PWM) - D3 on GEVCU2
+const int crankShaftPin = 52; // the pin where the crank shaft position signal will be sent - D0 on GEVCU2
+const int camShaftPin = 22; // the pin where the cam shaft position (CMP) signal will be sent - D1 on GEVCU2
+
+const boolean invertSignal = true; // are the signals being inverted (e.g. by a mosfet)
 boolean crankShaftState = false; //state of the crankshaft pin (high/low)
 
 const int flywheelTeeth = 58; // number of actual teeth on the flywheel (not counting the missing teeth)
 const int flywheelMissingTeeth = 2; // number of missing teeth on the flywheel
-const int idleRpm = 700; // the rpm at engine idle
-const int maxRpm = 9000;
+const int idleRpm = 850; // the rpm at engine idle
+const int maxRpm = 4000;
 
 int motorRpm; // the current motor rpm (later queried from motor controller)
 int crankShaftCounter = 0; // counts the transitions between teeth and holes (2 per tooth)
 int crankShaftCounterMax = 0; // calculated max value of the crankShaftCounter (so it doesn't have to be re-calculated at every interrupt)
 bool camShaftSecondHalf = false; // as the camshaft turns at half speed, this indicator shows which half of the camshaft is active
 bool throttleRampUp = true;
-uint16_t motorControllerThrottle = 0;
+uint16_t throttle = 0;
 
 void crankShaftHandler() {
+
+	// calculate and modify crank shaft signal
 	if (crankShaftCounter < flywheelMissingTeeth * 2)
-		crankShaftState = false;
+		crankShaftState = (invertSignal ? true : false); // simulate missing teeth
 	else
-		crankShaftState = !crankShaftState;
+		crankShaftState = !crankShaftState; // normal crank shaft signal
 
 	digitalWrite(crankShaftPin, crankShaftState);
 
+
+	// calculate and modify cam shaft signal
 	if (crankShaftCounter == 43 || crankShaftCounter == 103) {
-		digitalWrite(camShaftPin, false);// switch off after 22 or 102 pulses (131ï¿½ CA, 311ï¿½ CA)
+		digitalWrite(camShaftPin, (invertSignal ? true : false));// switch off cam shaft after 22 or 102 crank shaft pulses (131deg CA, 311deg CA)
 	}
 
 	if (camShaftSecondHalf) {
 		if (crankShaftCounter == 95)
-			digitalWrite(camShaftPin, true);// switch on after 48 pulses (407ï¿½ CA)
+			digitalWrite(camShaftPin, (invertSignal ? false : true));// switch on cam shaft after 48 pulses (407deg CA)
 	} else {
 		if (crankShaftCounter == 35 || crankShaftCounter == 51 || crankShaftCounter == 111)
-			digitalWrite(camShaftPin, true);// switch on after 18, 26 or 56 pulses (23.5ï¿½ CA, 50.5ï¿½CA, 250.5ï¿½CA)
+			digitalWrite(camShaftPin, (invertSignal ? false : true));// switch on cam shaft after 18, 26 or 56 pulses (23.5deg CA, 50.5deg CA, 250.5deg CA)
 	}
 
+	// check if crank shaft made one complete revolution
 	if (++crankShaftCounter > crankShaftCounterMax) {
 		crankShaftCounter = 0;
 		camShaftSecondHalf = !camShaftSecondHalf;
 	}
 }
 
-void handleTick() {
-	uint16_t throttle = motorControllerThrottle;
-	uint16_t rpm = motorRpm;
-
-	uint16_t mapLevel = throttle * 0.8; // only a very rough approximation, requires more analysis for good model
-	uint16_t mafLevel = throttle * rpm / maxRpm; // only a very rough approximation, requires more analysis for good model
-
-	analogWrite(mapPin, mapLevel);
-	analogWrite(mafPin, mafLevel);
+void mafMapHandler() {
+	analogWrite(mafPin, throttle * motorRpm / maxRpm); // only a very rough approximation, requires more analysis for good model
+	analogWrite(mapPin, throttle * 0.8); // only a very rough approximation, requires more analysis for good model
 }
 
 void setup() {
+	Serial.begin(CFG_SERIAL_SPEED);
+	Serial.println("starting rpm simulation");
+
 	motorRpm = idleRpm;
-	crankShaftCounterMax = (flywheelTeeth + flywheelMissingTeeth) * 2 - 1;
+	crankShaftCounterMax = (flywheelTeeth + flywheelMissingTeeth) * 2 - 1; // pre-calculate number of ticks for one revolution of crank shaft
 
 	pinMode(crankShaftPin, OUTPUT);
 	pinMode(camShaftPin, OUTPUT);
 
-	Timer8.attachInterrupt(crankShaftHandler).setFrequency(motorRpm * 2).start();
-  	Timer1.attachInterrupt(handleTick).setPeriod(100000).start();
+	Timer8.attachInterrupt(crankShaftHandler).setFrequency(motorRpm * 2).start(); // start timer for crank shaft handler
+  	Timer1.attachInterrupt(mafMapHandler).setPeriod(100000).start(); // start timer for maf and map handler
 }
 
 void loop() {
-	delay(10);
+	delay(100);
 
-	// simulate changes in the rpm and adjust cam/crankshaft timer
-	motorRpm += 10;
-	if (motorRpm > maxRpm)
-		motorRpm = idleRpm;
-	Timer8.setFrequency(motorRpm * 2);
+	Serial.print(crankShaftCounter);
+	Serial.print(":");
+	Serial.print(crankShaftState);
+	Serial.print(" ");
+	Serial.println(digitalRead(camShaftPin));
 
 	// simulate a throttle change
 	if (throttleRampUp) {
-		if (++motorControllerThrottle > 255)
+		if (++throttle > 255)
 			throttleRampUp = !throttleRampUp;
 	} else {
-		if (--motorControllerThrottle < 1) {
+		if (--throttle < 1) {
 			throttleRampUp = !throttleRampUp;
 		}
 	}
 
+	motorRpm = throttle * maxRpm / 255; // simulate motor rpm according to throttle level (later to be taken read from motor controller
+	Timer8.setFrequency(motorRpm * 2); // adjust tick frequency for crank shaft handler according to rpm
+
+//	Serial.print("throttle: ");
+//	Serial.print(throttle);
+//	Serial.print(" rpm: ");
+//	Serial.println(motorRpm);
 }
